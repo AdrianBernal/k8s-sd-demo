@@ -242,6 +242,20 @@ kubectl -n demo get pods -w                 # Argo CD lo devuelve a 3
 
 La idea final: el repositorio Git es el **estado deseado** y Argo CD es otro bucle de reconciliación, igual que los controladores de Kubernetes.
 
+**¿Por qué el pipeline hace un commit?** Argo CD no mira el registro de imágenes, solo el repositorio. Si nadie escribe el tag nuevo en `k8s/deployment.yaml`, para Argo CD no ha cambiado nada. Así cada despliegue queda registrado como un commit: sabes qué versión está desplegada mirando Git, y volver atrás es un `git revert`. No se forma un bucle: el workflow solo se lanza con cambios en `app/**` y su commit solo toca `k8s/`. Eso sí, tu copia local se queda atrás: haz `git pull` antes de tu siguiente push.
+
+---
+
+## ⚠️ Esto no está listo para producción
+
+Todo está simplificado para que se entienda y funcione en un portátil. En un proyecto real cambiarían, al menos, estas cosas:
+
+- **Código y manifiestos en el mismo repo.** Por eso el pipeline hace commit en tu rama y te obliga a hacer `git pull`. Lo habitual es tener un repo aparte solo para los manifiestos, o usar [Argo CD Image Updater](https://argocd-image-updater.readthedocs.io/), que vigila el registro y actualiza el tag por su cuenta.
+- **Un clúster kind en un solo ordenador.** Los "nodos" son contenedores de Docker en la misma máquina: si se apaga el portátil, cae todo, también el clúster HA. En producción los nodos están en máquinas distintas, o se usa un servicio gestionado (EKS, GKE, AKS).
+- **Argo CD sin endurecer.** Se instala desde `stable` en vez de una versión fija y se entra con la contraseña inicial de `admin`. En producción se fija la versión, se usa SSO y se borra el secreto inicial.
+- **Imagen pública en GHCR.** Cómodo para que el clúster la descargue sin credenciales, pero en un proyecto real el registro suele ser privado y el clúster usa un `imagePullSecret`.
+- **Servidor sin TLS ni autenticación.** Cualquiera que llegue al Service puede conectarse y la comunicación va en claro.
+
 ---
 
 ## Limpieza

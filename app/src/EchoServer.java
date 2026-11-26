@@ -15,7 +15,7 @@ import java.util.concurrent.Executors;
 public class EchoServer {
 
     // Cambia este valor y haz push para ver el despliegue automático (rolling update).
-    static final String VERSION = "v1";
+    static final String VERSION = "v2";
 
     public static void main(String[] args) throws IOException {
         int port = Integer.parseInt(System.getenv().getOrDefault("PORT", "5000"));
