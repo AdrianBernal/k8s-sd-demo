@@ -1,0 +1,48 @@
+# Versión securizada del Deployment: el mismo servidor, en el namespace
+# demo-secured y referenciado por DIGEST (sha256), no por tag.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: echo
+  namespace: demo-secured
+  labels:
+    app: echo
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: echo
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: echo
+    spec:
+      containers:
+        - name: echo
+          # El pipeline securizado (deploy-secured.yml) reescribe esta línea con
+          # el digest de la imagen firmada. Hasta que se ejecute, este valor no existe.
+          image: ghcr.io/adrianbernal/k8s-sd-demo/echo-server:pendiente-del-pipeline-securizado
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5000
+              name: tcp-echo
+          readinessProbe:
+            tcpSocket:
+              port: 5000
+            periodSeconds: 2
+          livenessProbe:
+            tcpSocket:
+              port: 5000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 256Mi

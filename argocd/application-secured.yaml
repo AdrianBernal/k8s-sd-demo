@@ -1,0 +1,23 @@
+# Versión securizada: Argo CD vigila k8s-secured/ (Deployment por digest,
+# Service y política de Kyverno) y lo despliega en el namespace demo-secured.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: echo-secured
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/adrianbernal/k8s-sd-demo.git
+    targetRevision: main
+    path: k8s-secured
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: demo-secured
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true   # evita diferencias falsas con los campos que Kyverno rellena en la política

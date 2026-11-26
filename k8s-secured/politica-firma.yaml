@@ -1,0 +1,43 @@
+# Control de admisión con Kyverno: en el namespace demo-secured, el API server
+# rechaza cualquier pod cuya imagen de este repositorio no esté firmada por el
+# workflow deploy-secured.yml en la rama main.
+#
+# Es un objeto más del repositorio: Argo CD lo aplica y lo mantiene como el resto.
+# La sync-wave -1 hace que se cree antes que el Deployment.
+#
+# Si haces un fork: cambia "adrianbernal" (en minúsculas) en la imagen y
+# "AdrianBernal" en el subject por tu usuario, respetando las mayúsculas
+# con las que aparece tu usuario en GitHub.
+apiVersion: policies.kyverno.io/v1
+kind: ImageValidatingPolicy
+metadata:
+  name: solo-imagenes-firmadas
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  validationActions:
+    - Deny
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: demo-secured
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+  matchImageReferences:
+    - glob: ghcr.io/adrianbernal/k8s-sd-demo/*
+  attestors:
+    - name: workflow
+      cosign:
+        keyless:
+          identities:
+            - issuer: https://token.actions.githubusercontent.com
+              subject: https://github.com/AdrianBernal/k8s-sd-demo/.github/workflows/deploy-secured.yml@refs/heads/main
+        ctlog:
+          url: https://rekor.sigstore.dev
+  validations:
+    - expression: >-
+        images.containers.map(image, verifyImageSignatures(image, [attestors.workflow])).all(e, e > 0)
+      message: la imagen no está firmada por el workflow deploy-secured.yml de la rama main

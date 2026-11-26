@@ -20,7 +20,9 @@ k8s/                      Manifiestos: Deployment + Service, StatefulSet + Servi
 cluster/kind.yaml         Clúster básico: 1 control plane + 2 workers
 cluster/kind-ha.yaml      Clúster HA: 3 control planes (3 miembros etcd) para la demo de Raft
 argocd/application.yaml   Aplicación de Argo CD que vigila k8s/
-.github/workflows/        Pipeline de CI/CD
+.github/workflows/        Pipeline de CI/CD (deploy.yml) y su versión securizada (deploy-secured.yml)
+k8s-secured/              Versión securizada: Deployment por digest + política de Kyverno
+argocd/application-secured.yaml   Aplicación de Argo CD que vigila k8s-secured/
 scripts/conflicto.sh      Demo de control de concurrencia optimista
 scripts/etcd-status.sh    Estado de etcd: líder Raft y término
 ```
@@ -255,6 +257,91 @@ Todo está simplificado para que se entienda y funcione en un portátil. En un p
 - **Argo CD sin endurecer.** Se instala desde `stable` en vez de una versión fija y se entra con la contraseña inicial de `admin`. En producción se fija la versión, se usa SSO y se borra el secreto inicial.
 - **Imagen pública en GHCR.** Cómodo para que el clúster la descargue sin credenciales, pero en un proyecto real el registro suele ser privado y el clúster usa un `imagePullSecret`.
 - **Servidor sin TLS ni autenticación.** Cualquiera que llegue al Service puede conectarse y la comunicación va en claro.
+- **Cadena de suministro sin proteger.** El clúster ejecuta cualquier imagen que le indique el manifiesto, sin comprobar quién la construyó ni qué lleva dentro. La sección siguiente muestra cómo protegerla.
+
+---
+
+## Despliegue securizado (opcional)
+
+Una versión paralela del despliegue automático que protege la **cadena de suministro**: desde el commit hasta el pod. No sustituye a la demo 3: usa su propio workflow, sus propios manifiestos (`k8s-secured/`) y su propio namespace (`demo-secured`), así que puedes tener las dos a la vez.
+
+### Qué añade
+
+1. **SBOM** (*Software Bill of Materials*). La lista de ingredientes de la imagen: cada paquete del sistema, el JRE con su versión exacta… en formato estándar (SPDX). Si mañana se publica un fallo grave en una librería, buscas en los SBOM y sabes en minutos qué imágenes la llevan.
+2. **Escaneo de vulnerabilidades** con Trivy. Si la imagen tiene algún fallo CRITICAL o HIGH que ya tenga arreglo, el pipeline se para y la imagen no se firma.
+3. **Procedencia firmada** (SLSA). Un documento firmado que dice: *esta imagen, con este digest, la construyó este workflow, desde este commit, en este repositorio, en un runner de GitHub*. Demuestra que la imagen salió del pipeline y no de un portátil.
+4. **Firma de la imagen sin claves** con cosign (Sigstore). GitHub Actions le da al workflow un token de identidad; Sigstore lo comprueba y emite un certificado de pocos minutos que dice *"esto lo firmó el workflow deploy-secured.yml del repo AdrianBernal/k8s-sd-demo"*. La firma queda en un registro público de transparencia (Rekor). No hay ninguna clave privada que guardar ni que te puedan robar.
+5. **Despliegue por digest.** Un tag como `v2` es solo un nombre que se puede mover: si alguien consigue escribir en el registro, puede subir otra imagen con el mismo tag. El digest (`@sha256:…`) es el hash del contenido: si cambia un byte, cambia el digest. El pipeline escribe en Git el digest, no el tag.
+6. **Control de admisión** con Kyverno. Los pasos anteriores generan pruebas; este las comprueba. Kyverno se engancha al API server y, antes de crear un pod en `demo-secured`, verifica que su imagen está firmada por el workflow `deploy-secured.yml` en la rama `main`. Si no, el API server rechaza el pod, venga la imagen de donde venga. La política (`k8s-secured/politica-firma.yaml`) es un YAML más del repo: Argo CD la mantiene como el resto del estado deseado.
+
+Todas las acciones del workflow van fijadas por **SHA de commit**, no por tag, por el mismo motivo que el punto 5: el tag de una acción también se puede mover para que apunte a código malicioso.
+
+### Cómo desplegarlo
+
+Necesitas tener funcionando la demo 3 (Argo CD instalado y tu fork configurado). Si usas un fork, cambia también tu usuario en `k8s-secured/*.yaml` y `argocd/application-secured.yaml`. En la política, el `subject` lleva tu usuario **con las mayúsculas exactas** con las que aparece en GitHub.
+
+1. **Instala Kyverno** en el clúster `sd`:
+   ```bash
+   kubectl config use-context kind-sd
+   kubectl apply --server-side -f https://github.com/kyverno/kyverno/releases/download/v1.20.0/install.yaml
+   kubectl -n kyverno rollout status deployment --timeout=300s
+   ```
+2. **Lanza el pipeline securizado.** No se ejecuta con cada push, solo a mano: en GitHub, pestaña **Actions** → *build-and-deploy-secured* → **Run workflow**. O desde la terminal:
+   ```bash
+   gh workflow run deploy-secured.yml
+   gh run watch
+   ```
+   Al terminar hace commit del digest en `k8s-secured/deployment.yaml`. Haz `git pull` para tenerlo en local.
+
+   Si se para en *Escanear vulnerabilidades*, el control funciona: la imagen base tiene fallos graves con arreglo disponible. Mira el informe en el log, actualiza la imagen base del `Dockerfile` y vuelve a lanzarlo.
+3. **Crea la aplicación de Argo CD:**
+   ```bash
+   kubectl apply -f argocd/application-secured.yaml
+   kubectl -n argocd get applications            # echo-secured: Synced / Healthy
+   kubectl -n demo-secured get pods
+   ```
+4. **Comprueba que el clúster rechaza lo que no está firmado.** Intenta arrancar en `demo-secured` la imagen del pipeline normal: es del mismo repositorio y va por digest, pero nadie la ha firmado:
+   ```bash
+   IMG=$(kubectl -n demo get pods -l app=echo -o jsonpath='{.items[0].status.containerStatuses[0].imageID}')
+   echo "$IMG"
+   kubectl -n demo-secured run intruso --image="$IMG" --restart=Never
+   ```
+   El API server responde con un error de admisión: *la imagen no está firmada por el workflow deploy-secured.yml de la rama main*. La misma imagen sí arranca en el namespace `demo`, donde no hay política.
+5. **Comprueba tú mismo la firma y la procedencia**, como haría un auditor. Toma el digest de `k8s-secured/deployment.yaml`:
+   ```bash
+   IMG=$(grep -o 'ghcr.io/.*@sha256:[a-f0-9]*' k8s-secured/deployment.yaml)
+   cosign verify "$IMG" \
+     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+     --certificate-identity https://github.com/AdrianBernal/k8s-sd-demo/.github/workflows/deploy-secured.yml@refs/heads/main
+   gh attestation verify "oci://$IMG" --repo AdrianBernal/k8s-sd-demo
+   ```
+   `cosign` lo puedes instalar desde [sigstore/cosign](https://github.com/sigstore/cosign/releases).
+6. **Descarga el SBOM:** en la ejecución del workflow, al final de la página, en *Artifacts*.
+
+### Proteger el repositorio
+
+Con GitOps, quien puede escribir en `main` decide qué corre en el clúster: es la puerta más directa. Esto se configura en GitHub (Settings → Rules o Branches), no en el repo:
+
+- **Protección de `main`:** nadie hace push directo; todo pasa por un pull request.
+- **Revisión obligatoria:** al menos otra persona aprueba cada cambio. Con un fichero `CODEOWNERS` puedes exigir que los cambios en `k8s-secured/` y `.github/workflows/` los apruebe alguien concreto.
+- **Commits firmados:** GitHub verifica que cada commit lo ha hecho quien dice haberlo hecho.
+- **Comprobaciones obligatorias:** el PR no se puede fusionar si falla el escaneo.
+
+Un matiz: los dos pipelines hacen commit automático en `main` con la nueva imagen. Con la rama protegida hay que permitir esa excepción a GitHub Actions, o cambiar el diseño para que el pipeline abra un pull request en vez de hacer push.
+
+### Relación con ataques reales
+
+- **xz Utils (2024):** la puerta trasera iba dentro de una librería del sistema. El SBOM te habría dicho en minutos qué imágenes llevaban la versión afectada, y el escaneo habría bloqueado las siguientes construcciones en cuanto se publicó el CVE. No lo habría evitado antes de descubrirse, pero sí habría acelerado mucho la respuesta.
+- **SolarWinds (2020):** el código fuente estaba limpio; el malware se inyectó en el servidor de compilación y la actualización salió firmada por la propia empresa. Por eso firmar no basta. La procedencia dice dónde y cómo se construyó, y con runners efímeros (una máquina nueva en cada build, que se destruye al terminar) es mucho más difícil que un atacante se quede instalado en el servidor de compilación. Además, la política exige que la firma sea de un workflow concreto, no de cualquiera.
+
+### Para quitarlo
+
+```bash
+kubectl -n argocd delete application echo-secured
+kubectl delete namespace demo-secured
+kubectl delete imagevalidatingpolicy solo-imagenes-firmadas
+kubectl delete -f https://github.com/kyverno/kyverno/releases/download/v1.20.0/install.yaml
+```
 
 ---
 

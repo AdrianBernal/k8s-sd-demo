@@ -1,0 +1,98 @@
+# Versión securizada del pipeline (ver "Despliegue securizado" en el README).
+# No se lanza con cada push: se ejecuta a mano desde la pestaña Actions
+# para no interferir con el pipeline normal (deploy.yml).
+#
+# Las acciones van fijadas por SHA de commit, no por tag: un tag se puede
+# mover para que apunte a otro código; un SHA, no. El comentario indica la versión.
+name: build-and-deploy-secured
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write      # commit del manifiesto actualizado
+  packages: write      # publicar la imagen y su firma en GHCR
+  id-token: write      # token de identidad para firmar sin claves (Sigstore)
+  attestations: write  # guardar la atestación de procedencia
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Nombre de la imagen (en minúsculas)
+        run: |
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}/echo-server"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          echo "TAG=secured-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+
+      - name: Login en GHCR
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Construir y publicar
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: app
+          push: true
+          tags: ${{ env.IMAGE }}:${{ env.TAG }}
+
+      - name: Guardar el digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: echo "DIGEST=$DIGEST" >> "$GITHUB_ENV"
+
+      # 1. SBOM: la lista de todo lo que lleva la imagen (paquetes del sistema, JRE...).
+      #    Se guarda como artefacto de la ejecución.
+      - name: Generar SBOM
+        uses: anchore/sbom-action@dfcb83b97731532d72be422cbc51ee64adb6fd56 # v0.24.4
+        with:
+          image: ${{ env.IMAGE }}@${{ env.DIGEST }}
+          format: spdx-json
+          registry-username: ${{ github.actor }}
+          registry-password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Escaneo de vulnerabilidades: si hay alguna CRITICAL o HIGH con arreglo
+      # disponible, el pipeline se para aquí y la imagen no se firma.
+      - name: Escanear vulnerabilidades
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        env:
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          image-ref: ${{ env.IMAGE }}@${{ env.DIGEST }}
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+
+      # 3. Firma sin claves (keyless): Sigstore emite un certificado de corta
+      #    duración a nombre de este workflow y la firma queda en Rekor.
+      - uses: sigstore/cosign-installer@881c63bd87e38389154debd8331404ce7ca8a3ab # v4.1.4
+
+      - name: Firmar la imagen
+        run: cosign sign --yes "${IMAGE}@${DIGEST}"
+
+      # 2. Procedencia (SLSA): qué workflow, commit y repo construyeron la imagen.
+      #    Se guarda en GitHub; se comprueba con "gh attestation verify".
+      - name: Atestación de procedencia
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ env.DIGEST }}
+          push-to-registry: false
+
+      # GitOps: se escribe el DIGEST, no el tag. Un tag se puede mover;
+      # el digest es el hash del contenido y no se puede falsificar.
+      - name: Actualizar el manifiesto (GitOps)
+        run: |
+          sed -i "s#image: .*/echo-server[:@].*#image: ${IMAGE}@${DIGEST}#" k8s-secured/deployment.yaml
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git commit -am "deploy-secured: echo-server ${DIGEST}"
+          git pull --rebase
+          git push
