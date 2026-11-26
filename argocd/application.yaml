@@ -1,0 +1,21 @@
+# Argo CD vigila la carpeta k8s/ del repositorio y reconcilia el clúster con ella.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: echo
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/adrianbernal/k8s-sd-demo.git
+    targetRevision: main
+    path: k8s
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: demo
+  syncPolicy:
+    automated:
+      prune: true     # borra lo que ya no esté en Git
+      selfHeal: true  # deshace cambios manuales en el clúster
+    syncOptions:
+      - CreateNamespace=true

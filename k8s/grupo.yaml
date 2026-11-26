@@ -1,0 +1,41 @@
+# Comunicación de grupos (tema 2.4): un StatefulSet da a cada réplica
+# una identidad estable (grupo-0, grupo-1, grupo-2) y el Service headless
+# (clusterIP: None) publica en DNS la IP de CADA miembro, sin balanceo.
+apiVersion: v1
+kind: Service
+metadata:
+  name: grupo
+  namespace: demo
+spec:
+  clusterIP: None
+  selector:
+    app: grupo
+  ports:
+    - port: 5000
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: grupo
+  namespace: demo
+spec:
+  serviceName: grupo
+  replicas: 3
+  selector:
+    matchLabels:
+      app: grupo
+  template:
+    metadata:
+      labels:
+        app: grupo
+    spec:
+      containers:
+        - name: echo
+          image: ghcr.io/adrianbernal/k8s-sd-demo/echo-server:v1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5000
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi

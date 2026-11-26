@@ -1,0 +1,14 @@
+# Service normal: una IP virtual estable y un nombre DNS ("echo")
+# que balancea las conexiones TCP entre las réplicas listas.
+apiVersion: v1
+kind: Service
+metadata:
+  name: echo
+  namespace: demo
+spec:
+  selector:
+    app: echo
+  ports:
+    - port: 5000
+      targetPort: 5000
+      protocol: TCP

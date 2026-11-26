@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: echo
+  namespace: demo
+  labels:
+    app: echo
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: echo
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1        # crea un pod nuevo de más...
+      maxUnavailable: 0  # ...y no quita uno viejo hasta que el nuevo esté listo
+  template:
+    metadata:
+      labels:
+        app: echo
+    spec:
+      containers:
+        - name: echo
+          # El pipeline de CI reescribe esta línea en cada push.
+          image: ghcr.io/adrianbernal/k8s-sd-demo/echo-server:v1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5000
+              name: tcp-echo
+          readinessProbe:        # ¿puede recibir tráfico?
+            tcpSocket:
+              port: 5000
+            periodSeconds: 2
+          livenessProbe:         # ¿sigue vivo? si no, se reinicia
+            tcpSocket:
+              port: 5000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 256Mi

@@ -1,0 +1,11 @@
+# Clúster en alta disponibilidad para la demo de Raft:
+# 3 control planes = 3 miembros de etcd (tolera 1 fallo).
+# Necesita bastante RAM (~6-8 GB libres). Pruébalo antes en tu portátil.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: sd-ha
+nodes:
+  - role: control-plane
+  - role: control-plane
+  - role: control-plane
+  - role: worker
