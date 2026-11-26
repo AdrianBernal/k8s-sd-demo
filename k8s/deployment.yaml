@@ -23,7 +23,7 @@ spec:
       containers:
         - name: echo
           # El pipeline de CI reescribe esta línea en cada push.
-          image: ghcr.io/adrianbernal/k8s-sd-demo/echo-server:233639d
+          image: ghcr.io/adrianbernal/k8s-sd-demo/echo-server:0b8af6c
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 5000
